@@ -1,0 +1,135 @@
+version: "2"
+
+jobs:
+  sync-source:
+    docker:
+      - image: buildpack-deps:trusty
+    steps:
+      - checkout
+      - persist_to_workspace:
+          root: .
+          paths:
+            - .
+
+  build-production:
+    docker:
+      - image: node:10
+    environment:
+      DOMAIN_COOKIE: "*.timkeo.vn"
+      BACKEND_API: https://api.timkeo.com
+      REDIRECT_URL: https://timkeo.vn
+    steps:
+      - run:
+          name: printenv
+          command: printenv
+      - attach_workspace:
+          at: .
+      - restore_cache:
+          keys:
+            - node-dependencies-{{ checksum "./package.json" }}
+      - run:
+          name: Install node dependencies
+          command: npm install
+      - save_cache:
+          paths:
+            - ./node_modules
+          key: node-dependencies-{{ checksum "./package.json" }}
+      - run:
+          name: NextJS build production
+          command: npm run build
+      - persist_to_workspace:
+          root: .
+          paths:
+            - .
+  build-staging:
+    docker:
+      - image: node:10
+    environment:
+      DOMAIN_COOKIE: "beta.timkeo.com"
+      BACKEND_API: https://dev-api.timkeo.com
+      REDIRECT_URL: https://beta.timkeo.com
+    steps:
+      - run:
+          name: printenv
+          command: printenv
+      - attach_workspace:
+          at: .
+      - restore_cache:
+          keys:
+            - node-dependencies-{{ checksum "./package.json" }}
+      - run:
+          name: Install node dependencies
+          command: npm install
+      - save_cache:
+          paths:
+            - ./node_modules
+          key: node-dependencies-{{ checksum "./package.json" }}
+      - run:
+          name: NextJS build production
+          command: npm run build
+      - persist_to_workspace:
+          root: .
+          paths:
+            - .
+  deploy-by-branch:
+    docker:
+      - image: "coxauto/aws-ebcli"
+    steps:
+      - attach_workspace:
+          at: .
+      - run:
+          name: Checking source correctly
+          command: ls -lah
+      - run:
+          name: Check EB CLI version
+          command: eb --version
+      - run:
+          name: Deploy Staging
+          command: eb deploy
+  invalidation-cloudfront-staging:
+    docker:
+      - image: "coxauto/aws-ebcli"
+    steps:
+      - run:
+          name: Clear cache
+          command: aws cloudfront create-invalidation --distribution-id E3ALH85ZDKYQ3T --paths "/*"
+  invalidation-cloudfront-production:
+    docker:
+      - image: "coxauto/aws-ebcli"
+    steps:
+      - run:
+          name: Clear cache
+          command: aws cloudfront create-invalidation --distribution-id E3FLDMHT6AE946 --paths "/*"
+
+workflows:
+  version: 2
+  deploy-production:
+    jobs:
+      - sync-source:
+          filters:
+            branches:
+              only: master
+      - build-production:
+          requires:
+            - sync-source
+      - deploy-by-branch:
+          requires:
+            - build-production
+      - invalidation-cloudfront-production:
+          requires:
+            - deploy-by-branch
+  deploy-staging:
+    jobs:
+      - sync-source:
+          filters:
+            branches:
+              only: dev
+      - build-staging:
+          requires:
+            - sync-source
+      - deploy-by-branch:
+          requires:
+            - build-staging
+      - invalidation-cloudfront-staging:
+          requires:
+            - deploy-by-branch
